@@ -506,6 +506,248 @@ class TestConsumer(unittest.TestCase):
     def test_multi_proc_pending_thread(self):
         return self.test_multi_proc_pending(driver_type=KAFKA_THREAD_DRIVER)
 
+    def test_zconsumer(self, driver_type=KAFKA_PROCESS_DRIVER):
+        hosts = '%s:%d' % (self.server2.zk_host, self.server2.zk_port)
+        queue = "test_zconsumer_%s" % (driver_type)
+
+        # Produce 100 messages to partition 0
+        produce1 = ProduceRequest(queue, 0, messages=[
+            create_message("Test message 0 %d" % i) for i in range(100)
+        ])
+
+        for resp in self.client.send_produce_request([produce1]):
+            self.assertEquals(resp.error, 0)
+            self.assertEquals(resp.offset, 0)
+
+        # Produce 100 messages to partition 1
+        produce2 = ProduceRequest(queue, 1, messages=[
+            create_message("Test message 1 %d" % i) for i in range(100)
+        ])
+
+        for resp in self.client.send_produce_request([produce2]):
+            self.assertEquals(resp.error, 0)
+            self.assertEquals(resp.offset, 0)
+
+        # Start a consumer
+        consumer = ZSimpleConsumer(hosts, "group1", queue,
+                                   chroot=self.server2.zk_chroot,
+                                   driver_type=driver_type)
+        all_messages = []
+        for message in consumer:
+            all_messages.append(message)
+
+        self.assertEquals(len(all_messages), 200)
+        # Make sure there are no duplicates
+        self.assertEquals(len(all_messages), len(set(all_messages)))
+
+        consumer.seek(-10, 2)
+        all_messages = []
+        for message in consumer:
+            all_messages.append(message)
+
+        self.assertEquals(len(all_messages), 10)
+
+        consumer.seek(-13, 2)
+        all_messages = []
+        for message in consumer:
+            all_messages.append(message)
+
+        self.assertEquals(len(all_messages), 13)
+
+        # Blocking API
+        start = datetime.now()
+        messages = consumer.get_messages(block=True, timeout=5)
+        diff = (datetime.now() - start).total_seconds()
+        self.assertGreaterEqual(diff, 5)
+        self.assertEqual(len(messages), 0)
+
+        # Send 10 messages
+        produce = ProduceRequest(queue, 0, messages=[
+            create_message("Test message 0 %d" % i) for i in range(10)
+        ])
+
+        for resp in self.client.send_produce_request([produce]):
+            self.assertEquals(resp.error, 0)
+            self.assertEquals(resp.offset, 100)
+
+        # Fetch 5 messages
+        messages = consumer.get_messages(count=5, block=True, timeout=5)
+        self.assertEqual(len(messages), 5)
+
+        # Fetch 10 messages
+        start = datetime.now()
+        messages = consumer.get_messages(count=10, block=True, timeout=5)
+        self.assertEqual(len(messages), 5)
+        diff = (datetime.now() - start).total_seconds()
+        self.assertGreaterEqual(diff, 5)
+
+        consumer.stop()
+
+    def test_zconsumer_gevent(self):
+        return self.test_zconsumer(driver_type=KAFKA_GEVENT_DRIVER)
+
+    def test_zconsumer_thread(self):
+        return self.test_zconsumer(driver_type=KAFKA_THREAD_DRIVER)
+
+    def test_zconsumer_pending(self, driver_type=KAFKA_PROCESS_DRIVER):
+        hosts = '%s:%d' % (self.server2.zk_host, self.server2.zk_port)
+        queue = "test_zookeeper_pending_%s" % (driver_type)
+
+        # Produce 10 messages to partition 0 and 1
+        produce1 = ProduceRequest(queue, 0, messages=[
+            create_message("Test message 0 %d" % i) for i in range(10)
+        ])
+        for resp in self.client.send_produce_request([produce1]):
+            self.assertEquals(resp.error, 0)
+            self.assertEquals(resp.offset, 0)
+
+        produce2 = ProduceRequest(queue, 1, messages=[
+            create_message("Test message 1 %d" % i) for i in range(10)
+        ])
+        for resp in self.client.send_produce_request([produce2]):
+            self.assertEquals(resp.error, 0)
+            self.assertEquals(resp.offset, 0)
+
+        consumer = ZSimpleConsumer(hosts, "group1", queue,
+                                   chroot=self.server2.zk_chroot,
+                                   driver_type=driver_type)
+
+        self.assertEquals(consumer.pending(), 20)
+        consumer.stop()
+
+    def test_zconsumer_pending_gevent(self):
+        return self.test_zconsumer_pending(driver_type=KAFKA_GEVENT_DRIVER)
+
+    def test_zconsumer_pending_thread(self):
+        return self.test_zconsumer_pending(driver_type=KAFKA_THREAD_DRIVER)
+
+
+    def test_zconsumer_rebalance(self, driver_type=KAFKA_PROCESS_DRIVER):
+        hosts = '%s:%d' % (self.server2.zk_host, self.server2.zk_port)
+        queue = "test_zconsumer_rebalance_%s" % (driver_type)
+
+        # Produce 100 messages to partition 0
+        produce1 = ProduceRequest(queue, 0, messages=[
+            create_message("Test message 0 %d" % i) for i in range(100)
+        ])
+
+        for resp in self.client.send_produce_request([produce1]):
+            self.assertEquals(resp.error, 0)
+            self.assertEquals(resp.offset, 0)
+
+        # Produce 100 messages to partition 1
+        produce2 = ProduceRequest(queue, 1, messages=[
+            create_message("Test message 1 %d" % i) for i in range(100)
+        ])
+
+        for resp in self.client.send_produce_request([produce2]):
+            self.assertEquals(resp.error, 0)
+            self.assertEquals(resp.offset, 0)
+
+        consumers = []
+
+        # Start first consumer (willing to have missed allocations)
+        consumer = ZSimpleConsumer(hosts, "group1", queue,
+                                   chroot=self.server2.zk_chroot,
+                                   driver_type=driver_type,
+                                   ignore_non_allocation=True,
+                                   time_boundary=2)
+
+        self.assertEquals(consumer.status(), 'ALLOCATED')
+        self.assertEquals(len(consumer.consumer.offsets), 2)
+
+        consumers.append(consumer)
+
+        # Start second consumer (willing to have missed allocations)
+        consumer = ZSimpleConsumer(hosts, "group1", queue,
+                                   chroot=self.server2.zk_chroot,
+                                   driver_type=driver_type,
+                                   ignore_non_allocation=True,
+                                   time_boundary=2)
+
+        consumers.append(consumer)
+        consumer.driver.sleep(15)
+
+        for consumer in consumers:
+            self.assertEquals(consumer.status(), 'ALLOCATED')
+            self.assertEquals(len(consumer.consumer.offsets), 1)
+
+        # Start a third consumer which is willing to have missed allocations
+        consumer = ZSimpleConsumer(hosts, "group1", queue,
+                                   chroot=self.server2.zk_chroot,
+                                   driver_type=driver_type,
+                                   ignore_non_allocation=True,
+                                   time_boundary=2)
+
+        consumers.append(consumer)
+        consumer.driver.sleep(15)
+
+        allocated = []
+        missed = []
+
+        for consumer in consumers:
+            if consumer.status() == 'ALLOCATED':
+                allocated.append(consumer)
+                self.assertEquals(len(consumer.consumer.offsets), 1)
+            elif consumer.status() == 'MISSED':
+                missed.append(consumer)
+
+        self.assertEquals(len(allocated), 2)
+        self.assertEquals(len(missed), 1)
+
+        all_messages = []
+
+        for consumer in allocated:
+            for message in consumer:
+                all_messages.append(message)
+
+        self.assertEquals(len(all_messages), 200)
+        # Make sure there are no duplicates
+        self.assertEquals(len(all_messages), len(set(all_messages)))
+
+        # Iterating through third consumer should be possible
+        missed_msgs = []
+
+        for consumer in missed:
+            for message in consumer:
+                missed_msgs.append(message)
+
+        self.assertEquals(len(missed_msgs), 0)
+
+        consumer1, consumer2 = allocated
+        consumer3, = missed
+
+        # Stop the first consumer. This third one should pick it up
+        consumer1.stop()
+        self.assertEquals(consumer1.status(), 'INACTIVE')
+
+        # Wait for a while for rebalancing
+        consumer2.driver.sleep(15)
+
+        self.assertEquals(consumer2.status(), 'ALLOCATED')
+        self.assertEquals(consumer3.status(), 'ALLOCATED')
+        self.assertEquals(len(consumer2.consumer.offsets), 1)
+        self.assertEquals(len(consumer3.consumer.offsets), 1)
+
+        # Stop the third consumer. This second one should pick up everything
+        consumer3.stop()
+        self.assertEquals(consumer3.status(), 'INACTIVE')
+
+        # Wait for a while for rebalancing
+        consumer2.driver.sleep(15)
+
+        self.assertEquals(consumer2.status(), 'ALLOCATED')
+        self.assertEquals(len(consumer2.consumer.offsets), 2)
+
+        consumer2.stop()
+        self.assertEquals(consumer2.status(), 'INACTIVE')
+
+    def test_zconsumer_rebalance_gevent(self):
+        return self.test_zconsumer_rebalance(driver_type=KAFKA_GEVENT_DRIVER)
+
+    def test_zconsumer_rebalance_thread(self):
+        return self.test_zconsumer_rebalance(driver_type=KAFKA_THREAD_DRIVER)
+
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG)

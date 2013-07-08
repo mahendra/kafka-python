@@ -6,7 +6,11 @@ import os
 import random
 import sys
 import time
-import simplejson
+import uuid
+try:
+    import simplejson as json
+except ImportError:
+    import json
 
 from functools import partial
 from Queue import Empty
@@ -21,10 +25,9 @@ from kafka.common import (
 )
 
 
-BROKER_IDS_PATH = '/brokers/ids/'      # Path where kafka stores broker info
-PARTITIONER_PATH = '/python/kafka/'    # Path to use for consumer co-ordination
+BROKER_IDS_PATH = 'brokers/ids/'      # Path where kafka stores broker info
+PARTITIONER_PATH = 'python/kafka/'    # Path to use for consumer co-ordination
 DEFAULT_TIME_BOUNDARY = 5
-CHECK_INTERVAL = 30
 
 # Allocation states
 ALLOCATION_COMPLETED = -1
@@ -38,16 +41,17 @@ log = logging.getLogger("kafka")
 random.seed()
 
 
-def _get_brokers(zkclient):
+def _get_brokers(zkclient, chroot='/'):
     """
     Get the list of available brokers registered in zookeeper
     """
     brokers = []
+    root = os.path.join(chroot, BROKER_IDS_PATH)
 
-    for broker_id in zkclient.get_children(BROKER_IDS_PATH):
-        path = os.path.join(BROKER_IDS_PATH, broker_id)
+    for broker_id in zkclient.get_children(root):
+        path = os.path.join(root, broker_id)
         info, _ = zkclient.get(path)
-        info = simplejson.loads(info)
+        info = json.loads(info)
         brokers.append((info['host'], info['port']))
 
     log.debug("List of brokers fetched" + str(brokers))
@@ -56,11 +60,11 @@ def _get_brokers(zkclient):
     return brokers
 
 
-def get_client(zkclient):
+def get_client(zkclient, chroot='/'):
     """
     Given a zookeeper client, return a KafkaClient instance for use
     """
-    brokers = _get_brokers(zkclient)
+    brokers = _get_brokers(zkclient, chroot=chroot)
     client = None
 
     for host, port in brokers:
@@ -70,7 +74,7 @@ def get_client(zkclient):
             log.error("Error while connecting to %s:%d" % (host, port),
                       exc_info=sys.exc_info())
 
-    raise exp
+    raise RuntimeError("Unable to find any running broker")
 
 
 # TODO: Make this a subclass of Producer later
@@ -82,10 +86,11 @@ class ZProducer(object):
     hosts: Comma-separated list of hosts to connect to
            (e.g. 127.0.0.1:2181,127.0.0.1:2182)
     topic - The kafka topic to send messages to
+    chroot - The kafka subdirectory to search for brokers
     """
     producer_kls = None
 
-    def __init__(self, hosts, topic, **kwargs):
+    def __init__(self, hosts, topic, chroot='/', **kwargs):
 
         if self.producer_kls is None:
             raise NotImplemented("Producer class needs to be mentioned")
@@ -94,7 +99,7 @@ class ZProducer(object):
         self.zkclient.start()
 
         # Start the producer instance
-        self.client = get_client(self.zkclient)
+        self.client = get_client(self.zkclient, chroot=chroot)
         self.producer = self.producer_kls(self.client, topic, **kwargs)
 
         # Stop Zookeeper
@@ -148,6 +153,7 @@ class ZSimpleConsumer(object):
            (e.g. 127.0.0.1:2181,127.0.0.1:2182)
     group: a name for this consumer, used for offset storage and must be unique
     topic: the topic to consume
+    chroot - The kafka subdirectory to search for brokers
     driver_type: The driver type to use for the consumer
     block_init: If True, the init method will block till the allocation is
         completed. If not, it will return immediately and user can invoke
@@ -182,7 +188,7 @@ class ZSimpleConsumer(object):
     * After re-balancing, if the consumer does not get any partitions,
       ignore_non_allocation will control it's behaviour
     """
-    def __init__(self, hosts, group, topic,
+    def __init__(self, hosts, group, topic, chroot='/',
                  driver_type=KAFKA_PROCESS_DRIVER,
                  block_init=True,
                  time_boundary=DEFAULT_TIME_BOUNDARY,
@@ -200,17 +206,16 @@ class ZSimpleConsumer(object):
         zkclient = KazooClient(hosts, handler=self.driver.kazoo_handler())
         zkclient.start()
 
-        self.client = get_client(zkclient)
+        self.client = get_client(zkclient, chroot=chroot)
         self.client._load_metadata_for_topics(topic)
         partitions = set(self.client.topic_partitions[topic])
 
         # create consumer id
         hostname = self.driver.socket.gethostname()
-        self.identifier = "%s-%s-%s-%d" % (topic, group, hostname, os.getpid())
-
-        path = os.path.join(PARTITIONER_PATH, topic, group)
-
+        self.identifier = "%s-%s-%s" % (topic, group, hostname)
         log.debug("Consumer id set to: %s" % self.identifier)
+
+        path = os.path.join(chroot, PARTITIONER_PATH, topic, group)
         log.debug("Using path %s for co-ordination" % path)
 
         # Create a function which can be used for creating consumers
@@ -246,7 +251,7 @@ class ZSimpleConsumer(object):
         # Start the worker
         self.proc = self.driver.Proc(target=self._check_and_allocate,
                                      args=(hosts, path, partitions,
-                                           self.allocated, CHECK_INTERVAL))
+                                           self.allocated))
         self.proc.daemon = True
         self.proc.start()
 
@@ -299,7 +304,7 @@ class ZSimpleConsumer(object):
             array[i] = filler
             i += 1
 
-    def _set_consumer(self, block=False, timeout=0):
+    def _set_consumer(self, block=False, timeout=None):
         """
         Check if a new consumer has to be created because of a re-balance
         """
@@ -348,7 +353,8 @@ class ZSimpleConsumer(object):
             self.consumer_state = ALLOCATION_COMPLETED
             log.info("Reinitialized consumer with %s" % partitions)
 
-    def _check_and_allocate(self, hosts, path, partitions, array, sleep_time):
+
+    def _check_and_allocate(self, hosts, path, partitions, array):
         """
         Checks if a new allocation is needed for the partitions.
         If so, co-ordinates with Zookeeper to get a set of partitions
@@ -361,10 +367,17 @@ class ZSimpleConsumer(object):
         zkclient = KazooClient(hosts, handler=self.driver.kazoo_handler())
         zkclient.start()
 
+        identifier = '%s-%d-%s' % (self.identifier,
+                                   os.getpid(),
+                                   uuid.uuid4().hex)
+
         # Set up the partitioner
         partitioner = zkclient.SetPartitioner(path=path, set=partitions,
-                                              identifier=self.identifier,
+                                              identifier=identifier,
                                               time_boundary=self.time_boundary)
+
+        # Once allocation is done, sleep for some time between each checks
+        sleep_time = self.time_boundary / 2.0
 
         # Keep running the allocation logic till we are asked to exit
         while not self.exit.is_set():
@@ -374,7 +387,7 @@ class ZSimpleConsumer(object):
 
                 # If there is a change, notify for a consumer change
                 if new != old:
-                    log.info("Acquired partitions: %s", new)
+                    log.info("Acquired partitions: %s" % str(new))
                     old = new
                     with self.lock:
                         self._set_partitions(array, new, ALLOCATION_MISSED)
@@ -387,9 +400,9 @@ class ZSimpleConsumer(object):
             elif partitioner.release:
                 # We have been asked to release the partitions
                 log.info("Releasing partitions for reallocation")
-                old = []
+                old = None
                 with self.lock:
-                    self._set_partitions(array, old, ALLOCATION_CHANGING)
+                    self._set_partitions(array, [], ALLOCATION_CHANGING)
                     self.changed.set()
 
                 partitioner.release_set()
