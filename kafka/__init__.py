@@ -26,4 +26,3 @@ __all__ = [
     'SimpleConsumer', 'MultiProcessConsumer',
     'create_message', 'create_gzip_message', 'create_snappy_message'
 ]
-
