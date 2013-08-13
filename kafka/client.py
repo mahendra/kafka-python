@@ -14,6 +14,7 @@ import zlib
 from kafka.common import *
 from kafka.conn import KafkaConnection
 from kafka.protocol import KafkaProtocol
+from kafka.util import KafkaConnectionError
 
 log = logging.getLogger("kafka")
 

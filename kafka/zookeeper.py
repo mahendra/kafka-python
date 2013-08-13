@@ -107,7 +107,7 @@ class ZProducer(object):
         self.zkclient.close()
         self.zkclient = None
 
-    def stop():
+    def stop(self):
         self.producer.stop()
         self.client.close()
 
