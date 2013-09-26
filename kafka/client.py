@@ -22,13 +22,16 @@ class KafkaClient(object):
     CLIENT_ID = "kafka-python"
     ID_GEN = count()
 
-    def __init__(self, host, port, bufsize=4096, module=socket):
+    def __init__(self, host, port, bufsize=4096,
+                 client_id=CLIENT_ID, module=socket):
         # We need one connection to bootstrap
         self.host = host
         self.port = port
         self.bufsize = bufsize
+        self.client_id = client_id
         self.module = module
         self.pid = os.getpid()
+
         self.conns = {               # (host, port) -> KafkaConnection
             (host, port): KafkaConnection(host, port, bufsize, module=module)
         }
@@ -66,7 +69,7 @@ class KafkaClient(object):
         recurse in the event of a retry.
         """
         requestId = self._next_id()
-        request = KafkaProtocol.encode_metadata_request(KafkaClient.CLIENT_ID,
+        request = KafkaProtocol.encode_metadata_request(self.client_id,
                                                         requestId, topics)
 
         response = self._send_broker_unaware_request(requestId, request)
@@ -163,7 +166,7 @@ class KafkaClient(object):
         for broker, payloads in payloads_by_broker.items():
             conn = self._get_conn_for_broker(broker)
             requestId = self._next_id()
-            request = encoder_fn(client_id=KafkaClient.CLIENT_ID,
+            request = encoder_fn(client_id=self.client_id,
                                  correlation_id=requestId, payloads=payloads)
 
             # Send the request, recv the response

@@ -16,13 +16,13 @@ from kafka.protocol import (
 
 from kafka.producer import SimpleProducer, KeyedProducer
 from kafka.partitioner import RoundRobinPartitioner, HashedPartitioner
-from kafka.consumer import SimpleConsumer, MultiProcessConsumer
+from kafka.consumer import SimpleConsumer, MultiConsumer
 
 __all__ = [
     'KAFKA_THREAD_DRIVER', 'KAFKA_GEVENT_DRIVER', 'KAFKA_PROCESS_DRIVER',
     'KafkaClient', 'KafkaConnection',
     'SimpleProducer', 'KeyedProducer',
     'RoundRobinPartitioner', 'HashedPartitioner',
-    'SimpleConsumer', 'MultiProcessConsumer',
+    'SimpleConsumer', 'MultiConsumer',
     'create_message', 'create_gzip_message', 'create_snappy_message'
 ]
