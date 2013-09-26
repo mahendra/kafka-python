@@ -13,15 +13,18 @@ from kafka.conn import KafkaConnection
 from kafka.protocol import (
     create_message, create_gzip_message, create_snappy_message
 )
-from kafka.producer import SimpleProducer
+
+from kafka.producer import SimpleProducer, KeyedProducer
+from kafka.partitioner import RoundRobinPartitioner, HashedPartitioner
 from kafka.consumer import SimpleConsumer, MultiConsumer
 from kafka.zookeeper import ZSimpleProducer, ZKeyedProducer, ZSimpleConsumer
 
 __all__ = [
     'KAFKA_THREAD_DRIVER', 'KAFKA_GEVENT_DRIVER', 'KAFKA_PROCESS_DRIVER',
-    'KafkaClient', 'KafkaConnection', 'SimpleProducer',
+    'KafkaClient', 'KafkaConnection',
+    'SimpleProducer', 'KeyedProducer',
+    'RoundRobinPartitioner', 'HashedPartitioner',
     'SimpleConsumer', 'MultiConsumer',
     'ZSimpleProducer', 'ZKeyedProducer', 'ZSimpleConsumer',
     'create_message', 'create_gzip_message', 'create_snappy_message'
 ]
-

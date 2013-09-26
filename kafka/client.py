@@ -24,13 +24,16 @@ class KafkaClient(object):
     CLIENT_ID = "kafka-python"
     ID_GEN = count()
 
-    def __init__(self, host, port, bufsize=4096, module=socket):
+    def __init__(self, host, port, bufsize=4096,
+                 client_id=CLIENT_ID, module=socket):
         # We need one connection to bootstrap
         self.host = host
         self.port = port
         self.bufsize = bufsize
+        self.client_id = client_id
         self.module = module
         self.pid = os.getpid()
+
         self.conns = {               # (host, port) -> KafkaConnection
             (host, port): KafkaConnection(host, port, bufsize, module=module)
         }
@@ -68,7 +71,7 @@ class KafkaClient(object):
         recurse in the event of a retry.
         """
         requestId = self._next_id()
-        request = KafkaProtocol.encode_metadata_request(KafkaClient.CLIENT_ID,
+        request = KafkaProtocol.encode_metadata_request(self.client_id,
                                                         requestId, topics)
 
         response = self._send_broker_unaware_request(requestId, request)
@@ -165,7 +168,7 @@ class KafkaClient(object):
         for broker, payloads in payloads_by_broker.items():
             conn = self._get_conn_for_broker(broker)
             requestId = self._next_id()
-            request = encoder_fn(client_id=KafkaClient.CLIENT_ID,
+            request = encoder_fn(client_id=self.client_id,
                                  correlation_id=requestId, payloads=payloads)
 
             # Send the request, recv the response
@@ -178,11 +181,14 @@ class KafkaClient(object):
                 self.conns.pop(broker, None)
                 raise
 
+            if decoder_fn is None:
+                continue
+
             for response in decoder_fn(response):
                 acc[(response.topic, response.partition)] = response
 
         # Order the accumulated responses by the original key order
-        return (acc[k] for k in original_keys)
+        return (acc[k] for k in original_keys) if acc else ()
 
     #################
     #   Public API  #
@@ -233,7 +239,12 @@ class KafkaClient(object):
 
         encoder = partial(KafkaProtocol.encode_produce_request,
                           acks=acks, timeout=timeout)
-        decoder = KafkaProtocol.decode_produce_response
+
+        if acks == 0:
+            decoder = None
+        else:
+            decoder = KafkaProtocol.decode_produce_response
+
         resps = self._send_broker_aware_request(payloads, encoder, decoder)
 
         out = []
