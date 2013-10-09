@@ -66,7 +66,7 @@ class Offsets(dict):
         i = 0
         for k, v in self.items():
             self.array[i] = k
-            self.array[i+1] = v
+            self.array[i + 1] = v
             i += 2
 
     def __setitem__(self, key, value):
@@ -326,12 +326,13 @@ class SimpleConsumer(Consumer):
         self.fetch_min_bytes = fetch_size_bytes
         self.fetch_started = defaultdict(bool)  # defaults to false
 
-        super(SimpleConsumer, self).__init__(client, group, topic,
-                                    partitions=partitions,
-                                    driver_type=driver_type, slave=slave,
-                                    auto_commit=auto_commit,
-                                    auto_commit_every_n=auto_commit_every_n,
-                                    auto_commit_every_t=auto_commit_every_t)
+        super(SimpleConsumer, self).__init__(
+            client, group, topic,
+            partitions=partitions,
+            driver_type=driver_type, slave=slave,
+            auto_commit=auto_commit,
+            auto_commit_every_n=auto_commit_every_n,
+            auto_commit_every_t=auto_commit_every_t)
 
     def provide_partition_info(self):
         """
@@ -600,11 +601,12 @@ class MultiConsumer(Consumer):
                  num_drivers=1, partitions_per_driver=0):
 
         # Initiate the base consumer class
-        super(MultiConsumer, self).__init__(client, group, topic,
-                                    partitions=None, driver_type=driver_type,
-                                    auto_commit=auto_commit,
-                                    auto_commit_every_n=auto_commit_every_n,
-                                    auto_commit_every_t=auto_commit_every_t)
+        super(MultiConsumer, self).__init__(
+            client, group, topic,
+            partitions=None, driver_type=driver_type,
+            auto_commit=auto_commit,
+            auto_commit_every_n=auto_commit_every_n,
+            auto_commit_every_t=auto_commit_every_t)
 
         # Variables for managing and controlling the data flow from
         # consumer child process to master
