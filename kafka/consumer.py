@@ -112,7 +112,8 @@ def _commit(client, group, topic, count, offsets, partitions=None):
     count.value = 0
 
 
-def _committer(client, group, topic, timeout, queue, event, count, offsets):
+def _committer(client, group, topic, driver_type, timeout,
+               queue, event, count, offsets):
     """
     The process thread which takes care of committing
 
@@ -120,7 +121,8 @@ def _committer(client, group, topic, timeout, queue, event, count, offsets):
     class. However, multiprocessing module has issues in windows. The
     functionality breaks unless this function is kept outside of a class
     """
-    client.reinit()
+    driver = KafkaDriver(driver_type)
+    client.reinit(module=driver.socket)
 
     if timeout is not None:
         timeout /= 1000.0
@@ -162,7 +164,8 @@ class Consumer(object):
         # Find out the driver that we are supposed to use and prepare the
         # connection socket accordingly
         self.driver = KafkaDriver(driver_type)
-        self.client = client.dup(module=self.driver.socket)
+        self.client = client.copy()
+        self.client.reinit(module=self.driver.socket)
         self.topic = topic
         self.group = group
         self.client._load_metadata_for_topics(topic)
@@ -213,6 +216,7 @@ class Consumer(object):
         # Start committer only in the master/controller
         if not slave:
             args = (client.copy(), group, topic,
+                    driver_type,
                     self.auto_commit_every_t,
                     self.commit_queue,
                     self.commit_event,
@@ -520,7 +524,8 @@ def _mp_consume(client, group, topic, driver_type, chunk,
     """
 
     # Make the child processes open separate socket connections
-    client.reinit()
+    driver = KafkaDriver(driver_type)
+    client.reinit(module=driver.socket)
 
     # We will start consumers without auto-commit. Auto-commit will be
     # done by the master controller process.

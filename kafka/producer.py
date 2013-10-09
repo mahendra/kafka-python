@@ -4,6 +4,7 @@ from itertools import cycle
 from multiprocessing import Queue, Process
 from Queue import Empty
 import logging
+import socket
 import sys
 
 from kafka.common import ProduceRequest
@@ -31,7 +32,7 @@ def _send_upstream(topic, queue, client, batch_time, batch_size,
     functionality breaks unless this function is kept outside of a class
     """
     stop = False
-    client.reinit()
+    client.reinit(module=socket)
 
     while not stop:
         timeout = batch_time

@@ -209,11 +209,16 @@ class KafkaClient(object):
         c = copy.deepcopy(self)
         for k, v in c.conns.items():
             c.conns[k] = v.copy()
+
+        c.module = None
         return c
 
-    def reinit(self):
+    def reinit(self, module=None):
+        if module is not None and self.module != module:
+            self.module = module
+
         for conn in self.conns.values():
-            conn.reinit()
+            conn.reinit(module=module)
 
     def send_produce_request(self, payloads=[], acks=1, timeout=1000,
                              fail_on_error=True, callback=None):

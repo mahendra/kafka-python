@@ -115,6 +115,7 @@ class KafkaConnection(object):
         """
         c = copy.deepcopy(self)
         c._sock = None
+        c.module = None
         return c
 
     def close(self):
@@ -124,9 +125,13 @@ class KafkaConnection(object):
         if self._sock:
             self._sock.close()
 
-    def reinit(self):
+    def reinit(self, module=None):
         """
         Re-initialize the socket connection
         """
         self.close()
+
+        if module is not None and self.module != module:
+            self.module = module
+
         self._init_sock()
