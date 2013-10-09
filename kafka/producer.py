@@ -7,7 +7,10 @@ import logging
 import socket
 import sys
 
-from kafka.common import ProduceRequest
+from kafka.common import (
+    ProduceRequest, KafkaDriver,
+    KAFKA_PROCESS_DRIVER, KAFKA_THREAD_DRIVER, KAFKA_GEVENT_DRIVER,
+)
 from kafka.common import FailedPayloadsException
 from kafka.protocol import create_message
 from kafka.partitioner import HashedPartitioner
@@ -20,7 +23,7 @@ BATCH_SEND_MSG_COUNT = 20
 STOP_ASYNC_PRODUCER = -1
 
 
-def _send_upstream(topic, queue, client, batch_time, batch_size,
+def _send_upstream(topic, queue, client, driver_type, batch_time, batch_size,
                    req_acks, ack_timeout):
     """
     Listen on the queue for a specified number of messages or till
@@ -32,7 +35,8 @@ def _send_upstream(topic, queue, client, batch_time, batch_size,
     functionality breaks unless this function is kept outside of a class
     """
     stop = False
-    client.reinit(module=socket)
+    driver = KafkaDriver(driver_type)
+    client.reinit(module=driver.socket)
 
     while not stop:
         timeout = batch_time
@@ -81,6 +85,7 @@ class Producer(object):
     topic - The topic for sending messages to
     async - If set to true, the messages are sent asynchronously via another
             thread (process). We will not wait for a response to these
+    driver_type: The driver type to use for the consumer
     req_acks - A value indicating the acknowledgements that the server must
                receive before responding to the request
     ack_timeout - Value (in milliseconds) indicating a timeout for waiting
@@ -97,11 +102,16 @@ class Producer(object):
     DEFAULT_ACK_TIMEOUT = 1000
 
     def __init__(self, client, async=False,
+                 driver_type=KAFKA_PROCESS_DRIVER,
                  req_acks=ACK_AFTER_LOCAL_WRITE,
                  ack_timeout=DEFAULT_ACK_TIMEOUT,
                  batch_send=False,
                  batch_send_every_n=BATCH_SEND_MSG_COUNT,
                  batch_send_every_t=BATCH_SEND_DEFAULT_INTERVAL):
+
+        self.driver = KafkaDriver(driver_type)
+        self.client = client.copy()
+        self.client.reinit(module=self.driver.socket)
 
         if batch_send:
             async = True
@@ -121,7 +131,8 @@ class Producer(object):
             self.proc = Process(target=_send_upstream,
                                 args=(self.topic,
                                       self.queue,
-                                      self.client.copy(),
+                                      self.client,
+                                      driver_type,
                                       batch_send_every_t,
                                       batch_send_every_n,
                                       self.req_acks,
@@ -172,6 +183,7 @@ class SimpleProducer(Producer):
     topic - The topic for sending messages to
     async - If True, the messages are sent asynchronously via another
             thread (process). We will not wait for a response to these
+    driver_type: The driver type to use for the consumer
     req_acks - A value indicating the acknowledgements that the server must
                receive before responding to the request
     ack_timeout - Value (in milliseconds) indicating a timeout for waiting
@@ -181,6 +193,7 @@ class SimpleProducer(Producer):
     batch_send_every_t - If set, messages are send after this timeout
     """
     def __init__(self, client, topic, async=False,
+                 driver_type=KAFKA_PROCESS_DRIVER,
                  req_acks=Producer.ACK_AFTER_LOCAL_WRITE,
                  ack_timeout=Producer.DEFAULT_ACK_TIMEOUT,
                  batch_send=False,
@@ -190,7 +203,9 @@ class SimpleProducer(Producer):
         client._load_metadata_for_topics(topic)
         self.next_partition = cycle(client.topic_partitions[topic])
 
-        super(SimpleProducer, self).__init__(client, async, req_acks,
+        super(SimpleProducer, self).__init__(client, async,
+                                             driver_type,
+                                             req_acks,
                                              ack_timeout, batch_send,
                                              batch_send_every_n,
                                              batch_send_every_t)
@@ -211,6 +226,7 @@ class KeyedProducer(Producer):
         to send the message to. Must be derived from Partitioner
     async - If True, the messages are sent asynchronously via another
             thread (process). We will not wait for a response to these
+    driver_type: The driver type to use for the consumer
     ack_timeout - Value (in milliseconds) indicating a timeout for waiting
                   for an acknowledgement
     batch_send - If True, messages are send in batches
@@ -218,6 +234,7 @@ class KeyedProducer(Producer):
     batch_send_every_t - If set, messages are send after this timeout
     """
     def __init__(self, client, topic, partitioner=None, async=False,
+                 driver_type=KAFKA_PROCESS_DRIVER,
                  req_acks=Producer.ACK_AFTER_LOCAL_WRITE,
                  ack_timeout=Producer.DEFAULT_ACK_TIMEOUT,
                  batch_send=False,
@@ -231,7 +248,8 @@ class KeyedProducer(Producer):
 
         self.partitioner = partitioner(client.topic_partitions[topic])
 
-        super(KeyedProducer, self).__init__(client, async, req_acks,
+        super(KeyedProducer, self).__init__(client, async,
+                                            driver_type, req_acks,
                                             ack_timeout, batch_send,
                                             batch_send_every_n,
                                             batch_send_every_t)
