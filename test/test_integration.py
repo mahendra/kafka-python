@@ -613,8 +613,11 @@ class TestConsumer(unittest.TestCase):
 
         consumer.stop()
 
-    def test_simple_consumer_blocking(self):
-        consumer = SimpleConsumer(self.client, "group1", "test_simple_consumer_blocking", auto_commit=False)
+    def test_simple_consumer_blocking(self, driver_type=KAFKA_PROCESS_DRIVER):
+        queue = "test_simple_consumer_blocking_%s" % (driver_type)
+
+        consumer = SimpleConsumer(self.client, "group1", queue,
+                                  auto_commit=False)
 
         # Blocking API
         start = datetime.now()
@@ -645,11 +648,11 @@ class TestConsumer(unittest.TestCase):
 
         consumer.stop()
 
-    def test_simple_consumer_gevent(self):
-        return self.test_simple_consumer(driver_type=KAFKA_GEVENT_DRIVER)
+    def test_simple_consumer_blocking_gevent(self):
+        return self.test_simple_consumer_blocking(driver_type=KAFKA_GEVENT_DRIVER)
 
-    def test_simple_consumer_thread(self):
-        return self.test_simple_consumer(driver_type=KAFKA_THREAD_DRIVER)
+    def test_simple_consumer_blocking_thread(self):
+        return self.test_simple_consumer_blocking(driver_type=KAFKA_THREAD_DRIVER)
 
     def test_simple_consumer_pending(self, driver_type=KAFKA_PROCESS_DRIVER):
         queue = "test_simple_pending_%s" % (driver_type)

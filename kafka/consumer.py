@@ -534,7 +534,8 @@ def _mp_consume(client, group, topic, driver_type, chunk,
                               driver_type=driver_type,
                               auto_commit=False,
                               auto_commit_every_n=None,
-                              auto_commit_every_t=None)
+                              auto_commit_every_t=None,
+                              slave=True)
 
     # Ensure that the consumer provides the partition information
     consumer.provide_partition_info()

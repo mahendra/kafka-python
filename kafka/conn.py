@@ -113,10 +113,10 @@ class KafkaConnection(object):
         Create an inactive copy of the connection object
         A reinit() has to be done on the copy before it can be used again
         """
-        c = copy.deepcopy(self)
+        c = copy.copy(self)
         c._sock = None
         c.module = None
-        return c
+        return copy.deepcopy(c)
 
     def close(self):
         """

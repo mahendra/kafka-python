@@ -206,12 +206,15 @@ class KafkaClient(object):
         Create an inactive copy of the client object
         A reinit() has to be done on the copy before it can be used again
         """
-        c = copy.deepcopy(self)
-        for k, v in c.conns.items():
+        c = copy.copy(self)
+        c.module = None
+        c.conns = {}
+        c = copy.deepcopy(c)
+
+        for k, v in self.conns.items():
             c.conns[k] = v.copy()
 
-        c.module = None
-        return c
+        return copy.deepcopy(c)
 
     def reinit(self, module=None):
         if module is not None and self.module != module:
