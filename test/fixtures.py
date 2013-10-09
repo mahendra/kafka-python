@@ -17,6 +17,7 @@ from urlparse import urlparse
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 KAFKA_ROOT = os.path.join(PROJECT_ROOT, "kafka-src")
 IVY_ROOT = os.path.expanduser("~/.ivy2/cache")
+SCALA_VERSION = '2.8.0'
 
 if "PROJECT_ROOT" in os.environ:
     PROJECT_ROOT = os.environ["PROJECT_ROOT"]
@@ -24,6 +25,8 @@ if "KAFKA_ROOT" in os.environ:
     KAFKA_ROOT = os.environ["KAFKA_ROOT"]
 if "IVY_ROOT" in os.environ:
     IVY_ROOT = os.environ["IVY_ROOT"]
+if "SCALA_VERSION" in os.environ:
+    SCALA_VERSION = os.environ["SCALA_VERSION"]
 
 
 def test_resource(file):
@@ -33,16 +36,8 @@ def test_resource(file):
 def test_classpath():
     # ./kafka-src/bin/kafka-run-class.sh is the authority.
     jars = ["."]
-    jars.append(IVY_ROOT + "/org.xerial.snappy/snappy-java/bundles/snappy-java-1.0.4.1.jar")
-    jars.append(IVY_ROOT + "/org.scala-lang/scala-library/jars/scala-library-2.8.0.jar")
-    jars.append(IVY_ROOT + "/org.scala-lang/scala-compiler/jars/scala-compiler-2.8.0.jar")
-    jars.append(IVY_ROOT + "/log4j/log4j/jars/log4j-1.2.15.jar")
-    jars.append(IVY_ROOT + "/org.slf4j/slf4j-api/jars/slf4j-api-1.6.4.jar")
-    jars.append(IVY_ROOT + "/org.apache.zookeeper/zookeeper/jars/zookeeper-3.3.4.jar")
-    jars.append(IVY_ROOT + "/net.sf.jopt-simple/jopt-simple/jars/jopt-simple-3.2.jar")
-    jars.extend(glob.glob(KAFKA_ROOT + "/core/target/scala-2.8.0/*.jar"))
-    jars.extend(glob.glob(KAFKA_ROOT + "/core/lib/*.jar"))
-    jars.extend(glob.glob(KAFKA_ROOT + "/perf/target/scala-2.8.0/kafka*.jar"))
+    # assume all dependencies have been packaged into one jar with sbt-assembly's task "assembly-package-dependency"
+    jars.extend(glob.glob(KAFKA_ROOT + "/core/target/scala-%s/*.jar" % SCALA_VERSION))
 
     jars = filter(os.path.exists, map(os.path.abspath, jars))
     return ":".join(jars)
@@ -247,7 +242,7 @@ class ZookeeperFixture(object):
 
 class KafkaFixture(object):
     @staticmethod
-    def instance(broker_id, zk_host, zk_port, zk_chroot=None):
+    def instance(broker_id, zk_host, zk_port, zk_chroot=None, replicas=1, partitions=2):
         if zk_chroot is None:
             zk_chroot = "kafka-python_" + str(uuid.uuid4()).replace("-", "_")
         if "KAFKA_URI" in os.environ:
@@ -256,11 +251,11 @@ class KafkaFixture(object):
             fixture = ExternalService(host, port)
         else:
             (host, port) = ("127.0.0.1", get_open_port())
-            fixture = KafkaFixture(host, port, broker_id, zk_host, zk_port, zk_chroot)
+            fixture = KafkaFixture(host, port, broker_id, zk_host, zk_port, zk_chroot, replicas, partitions)
             fixture.open()
         return fixture
 
-    def __init__(self, host, port, broker_id, zk_host, zk_port, zk_chroot):
+    def __init__(self, host, port, broker_id, zk_host, zk_port, zk_chroot, replicas=1, partitions=2):
         self.host = host
         self.port = port
 
@@ -270,19 +265,24 @@ class KafkaFixture(object):
         self.zk_port = zk_port
         self.zk_chroot = zk_chroot
 
+        self.replicas   = replicas
+        self.partitions = partitions
+
         self.tmp_dir = None
         self.child = None
 
     def open(self):
         self.tmp_dir = tempfile.mkdtemp()
         print("*** Running local Kafka instance")
-        print("  host      = %s" % self.host)
-        print("  port      = %s" % self.port)
-        print("  broker_id = %s" % self.broker_id)
-        print("  zk_host   = %s" % self.zk_host)
-        print("  zk_port   = %s" % self.zk_port)
-        print("  zk_chroot = %s" % self.zk_chroot)
-        print("  tmp_dir   = %s" % self.tmp_dir)
+        print("  host       = %s" % self.host)
+        print("  port       = %s" % self.port)
+        print("  broker_id  = %s" % self.broker_id)
+        print("  zk_host    = %s" % self.zk_host)
+        print("  zk_port    = %s" % self.zk_port)
+        print("  zk_chroot  = %s" % self.zk_chroot)
+        print("  replicas   = %s" % self.replicas)
+        print("  partitions = %s" % self.partitions)
+        print("  tmp_dir    = %s" % self.tmp_dir)
 
         # Create directories
         os.mkdir(os.path.join(self.tmp_dir, "logs"))
@@ -314,7 +314,7 @@ class KafkaFixture(object):
 
         print("*** Starting Kafka...")
         self.child.start()
-        self.child.wait_for(r"\[Kafka Server \d+\], started")
+        self.child.wait_for(r"\[Kafka Server %d\], Started" % self.broker_id)
         print("*** Done!")
 
     def close(self):

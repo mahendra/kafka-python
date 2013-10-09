@@ -85,6 +85,64 @@ class Offsets(dict):
                     yield k, self.array[i]
 
 
+def _commit(client, group, topic, count, offsets, partitions=None):
+    """
+    Commit offsets for this consumer
+
+    partitions: list of partitions to commit, default is to commit
+                all of them
+    """
+
+    # short circuit if nothing happened.
+    if count.value == 0:
+        return
+
+    reqs = []
+    for partition, offset in offsets.shareditems(keys=partitions):
+        log.debug("Commit offset %d in SimpleConsumer: "
+                  "group=%s, topic=%s, partition=%s" %
+                  (offset, group, topic, partition))
+
+        reqs.append(OffsetCommitRequest(topic, partition, offset, None))
+
+    resps = client.send_offset_commit_request(group, reqs)
+    for resp in resps:
+        assert resp.error == 0
+
+    count.value = 0
+
+
+def _committer(client, group, topic, timeout, queue, event, count, offsets):
+    """
+    The process thread which takes care of committing
+
+    NOTE: Ideally, this should have been a method inside the Consumer
+    class. However, multiprocessing module has issues in windows. The
+    functionality breaks unless this function is kept outside of a class
+    """
+    client.reinit()
+
+    if timeout is not None:
+        timeout /= 1000.0
+
+    while True:
+        try:
+            partitions = queue.get(timeout=timeout)
+            if partitions == -1:
+                break
+            notify = True
+        except Empty:
+            # A timeout has happened. Do a commit
+            partitions = None
+            notify = False
+
+        # Try and commit the offsets
+        _commit(client, group, topic, count, offsets, partitions)
+
+        if notify:
+            event.set()
+
+
 class Consumer(object):
     """
     Base class to be used by other consumers. Not to be used directly
@@ -119,8 +177,13 @@ class Consumer(object):
         self.commit_timer = None
         self.count_since_commit = Value('i', 0)
         self.auto_commit = auto_commit
-        self.auto_commit_every_n = auto_commit_every_n
-        self.auto_commit_every_t = auto_commit_every_t
+
+        if auto_commit:
+            self.auto_commit_every_n = auto_commit_every_n
+            self.auto_commit_every_t = auto_commit_every_t
+        else:
+            self.auto_commit_every_n = None
+            self.auto_commit_every_t = None
 
         def get_or_init_offset_callback(resp):
             if resp.error == ErrorMapping.NO_ERROR:
@@ -149,42 +212,16 @@ class Consumer(object):
 
         # Start committer only in the master/controller
         if not slave:
-            self.commit_timer = self.driver.Proc(target=self._committer,
-                                                 args=(self.offsets,))
+            args = (client.copy(), group, topic,
+                    self.auto_commit_every_t,
+                    self.commit_queue,
+                    self.commit_event,
+                    self.count_since_commit,
+                    self.offsets)
+
+            self.commit_timer = self.driver.Proc(target=_committer, args=args)
             self.commit_timer.daemon = True
             self.commit_timer.start()
-
-    def _committer(self, offsets):
-        """
-        The process thread which takes care of committing
-        """
-
-        # Prepare an alternate connection socket for use
-        client = self.client.dup()
-        self.offsets = offsets
-        timeout = self.auto_commit_every_t
-
-        if timeout is not None:
-            timeout /= 1000.0
-
-        while True:
-            try:
-                partitions = self.commit_queue.get(timeout=timeout)
-                if partitions == -1:
-                    break
-                notify = True
-            except Empty:
-                # A timeout has happened. Do a commit
-                partitions = None
-                notify = False
-
-            self._commit(partitions, client)
-
-            if notify:
-                self.commit_event.set()
-
-        # Cleanup the client instance
-        client.close()
 
     def commit(self, partitions=None, block=True, timeout=None):
         """
@@ -201,33 +238,6 @@ class Consumer(object):
         if block:
             self.commit_event.wait(timeout)
 
-    def _commit(self, partitions=None, client=None):
-        """
-        Commit offsets for this consumer
-
-        partitions: list of partitions to commit, default is to commit
-                    all of them
-        """
-
-        # short circuit if nothing happened.
-        if self.count_since_commit.value == 0:
-            return
-
-        reqs = []
-        for partition, offset in self.offsets.shareditems(keys=partitions):
-            log.debug("Commit offset %d in SimpleConsumer: "
-                      "group=%s, topic=%s, partition=%s" %
-                      (offset, self.group, self.topic, partition))
-
-            reqs.append(OffsetCommitRequest(self.topic, partition,
-                                            offset, None))
-
-        resps = client.send_offset_commit_request(self.group, reqs)
-        for resp in resps:
-            assert resp.error == 0
-
-        self.count_since_commit.value = 0
-
     def _auto_commit(self):
         """
         Check if we have to commit based on number of messages and commit
@@ -242,7 +252,12 @@ class Consumer(object):
 
     def stop(self):
         if self.commit_timer is not None:
-            self.commit()
+            # We will do an auto commit only if configured to do so
+            # Else, it is the responsibility of the caller to commit before
+            # stopping
+            if self.auto_commit:
+                self.commit()
+
             self.commit_queue.put(-1)
             self.commit_timer.join()
 
@@ -364,8 +379,8 @@ class SimpleConsumer(Consumer):
 
             resps = self.client.send_offset_request(reqs)
             for resp in resps:
-                self.offsets[resp.partition] = resp.offsets[0] + \
-                                                deltas[resp.partition]
+                self.offsets[resp.partition] = \
+                    resp.offsets[0] + deltas[resp.partition]
         else:
             raise ValueError("Unexpected value for `whence`, %d" % whence)
 
@@ -388,7 +403,7 @@ class SimpleConsumer(Consumer):
             while count > 0:
                 try:
                     messages.append(next(iterator))
-                except StopIteration as exp:
+                except StopIteration:
                     break
                 count -= 1
 
@@ -448,11 +463,15 @@ class SimpleConsumer(Consumer):
         fetch_size = self.fetch_min_bytes
 
         while True:
-            req = FetchRequest(self.topic, partition, offset, fetch_size)
+            # use MaxBytes = client's bufsize since we're only
+            # fetching one topic + partition
+            req = FetchRequest(
+                self.topic, partition, offset, self.client.bufsize)
 
-            (resp,) = self.client.send_fetch_request([req],
-                                    max_wait_time=self.fetch_max_wait_time,
-                                    min_bytes=fetch_size)
+            (resp,) = self.client.send_fetch_request(
+                [req],
+                max_wait_time=self.fetch_max_wait_time,
+                min_bytes=fetch_size)
 
             assert resp.topic == self.topic
             assert resp.partition == partition
@@ -462,18 +481,22 @@ class SimpleConsumer(Consumer):
                 for message in resp.messages:
                     next_offset = message.offset
 
-                    # update the offset before the message is yielded. This is
-                    # so that the consumer state is not lost in certain cases.
-                    # For eg: the message is yielded and consumed by the caller,
-                    # but the caller does not come back into the generator again.
-                    # The message will be consumed but the status will not be
-                    # updated in the consumer
+                    # update the offset before the message is yielded. This
+                    # is so that the consumer state is not lost in certain
+                    # cases.
+                    #
+                    # For eg: the message is yielded and consumed by the
+                    # caller, but the caller does not come back into the
+                    # generator again. The message will be consumed but the
+                    # status will not be updated in the consumer
                     self.fetch_started[partition] = True
                     self.offsets[partition] = message.offset
                     yield message
             except ConsumerFetchSizeTooSmall, e:
-                log.warn("Fetch size is too small, increasing by 1.5x and retrying")
                 fetch_size *= 1.5
+                log.warn(
+                    "Fetch size too small, increasing to %d (1.5x) and retry",
+                    fetch_size)
                 continue
             except ConsumerNoMoreData, e:
                 log.debug("Iteration was ended by %r", e)
